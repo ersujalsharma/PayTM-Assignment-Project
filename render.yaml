@@ -1,0 +1,40 @@
+# Render blueprint: a Dockerized web service + a free managed Postgres.
+# Connect this repo in the Render dashboard ("New +" -> "Blueprint") and it
+# provisions both and wires DATABASE_* automatically.
+services:
+  - type: web
+    name: seat-reservation
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /actuator/health/readiness
+    envVars:
+      # Render injects PORT; the app reads it. Pin it explicitly for clarity.
+      - key: PORT
+        value: "8080"
+      # Pull the connection string + credentials from the managed database.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: seat-reservation-db
+          property: connectionString
+      - key: DATABASE_USERNAME
+        fromDatabase:
+          name: seat-reservation-db
+          property: user
+      - key: DATABASE_PASSWORD
+        fromDatabase:
+          name: seat-reservation-db
+          property: password
+      - key: AUTH_TOKENS
+        value: "alice-token:alice,bob-token:bob,admin-token:admin"
+      - key: HOLD_TTL_SECONDS
+        value: "120"
+      # Keep the pool well under Postgres' connection cap on the free tier.
+      - key: DB_POOL_SIZE
+        value: "15"
+
+databases:
+  - name: seat-reservation-db
+    plan: free
+    databaseName: seats
+    user: seats

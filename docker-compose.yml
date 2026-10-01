@@ -1,0 +1,44 @@
+# One-command local stack: Postgres + the service, wired together.
+# `docker compose up --build` brings up a healthy, migrated service on :8080.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: seats
+      POSTGRES_USER: seats
+      POSTGRES_PASSWORD: seats
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seats -d seats"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: jdbc:postgresql://db:5432/seats
+      DATABASE_USERNAME: seats
+      DATABASE_PASSWORD: seats
+      PORT: 8080
+      # Explicit demo tokens so identity tests are deterministic.
+      # alice/bob/admin map to those user ids; passthrough also works if unset.
+      AUTH_TOKENS: "alice-token:alice,bob-token:bob,admin-token:admin"
+      HOLD_TTL_SECONDS: 120
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 40s
+
+volumes:
+  pgdata:

@@ -1,0 +1,2 @@
+org.springframework.boot.env.EnvironmentPostProcessor=\
+money.paytm.seatreservation.config.DatabaseUrlNormalizer
