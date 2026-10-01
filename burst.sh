@@ -92,12 +92,19 @@ HOT_409=$(grep -c '^409 ' "$HOT_OUT" || true)
 HOT_5XX=$(grep -cE '^5[0-9][0-9] ' "$HOT_OUT" || true)
 echo "   S1 winners (201): $HOT_201   losers (409): $HOT_409   5xx: $HOT_5XX"
 
-# ---- 3. GENERAL STAMPEDE: random seats ---------------------------------
+# Reserve a few seat labels exclusively for the idempotency / limit sub-tests
+# so the random stampede below cannot contend for them and muddy those checks.
+# Stampede draws from seats [RESERVED_FROM .. TOTAL_SEATS]; S2 and S50..S59 are
+# kept clear.
+RESERVED_FROM=70
+
+# ---- 3. GENERAL STAMPEDE: random seats (in the stampede range) ----------
 echo
-echo ">>> General stampede: $STAMPEDE_USERS users grab random seats"
+echo ">>> General stampede: $STAMPEDE_USERS users grab random seats (S${RESERVED_FROM}..S${TOTAL_SEATS})"
 STAMP_OUT="$TMP/stamp.txt"; : > "$STAMP_OUT"
+STAMPEDE_RANGE=$(( TOTAL_SEATS - RESERVED_FROM + 1 ))
 for u in $(seq 1 "$STAMPEDE_USERS"); do
-  s=$(( (RANDOM % TOTAL_SEATS) + 1 ))
+  s=$(( (RANDOM % STAMPEDE_RANGE) + RESERVED_FROM ))
   fire_reserve "user$u" "[\"S$s\"]" "stamp-$u-$s" "$STAMP_OUT" &
   if (( u % 100 == 0 )); then wait; fi
 done
