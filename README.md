@@ -69,7 +69,28 @@ make burst BASE_URL=<BASE_URL>
 #            ^ base url                           ^seats ^hot-seat users ^stampede users
 ```
 
-Requires `bash`, `curl`, `jq`. Sample output:
+### High-volume (20k) load test
+
+The bash burst can't generate 20k concurrency (one `curl` per request). For the
+assignment's ~20,000-concurrent scenario there's a single-JVM load generator that
+reuses connections and uses virtual threads:
+
+```bash
+# java <base-url> <total> <concurrency> <seats> <hotSeats> <hotFraction>
+java loadtest/LoadTest.java http://localhost:8080 20000 600 2000 5 0.5
+```
+
+It reports status distribution, declines by reason, **server 5xx vs client-side
+generator errors** (kept separate), p50/p95/p99 latency, throughput, per-hot-seat
+winner counts, and the final reconciliation.
+
+Verified on the local Docker stack: **20,000 requests at 600 in-flight → 0 server
+5xx, ~5000 req/s, p99 ~240ms, every hot seat sold exactly once, reconciliation
+exact.** Under pathological load (1200 in-flight, 95% storming 3 seats) the service
+still returns **zero 5xx** — when genuinely saturated it sheds with `429 Too Many
+Requests` + `Retry-After` (a 4xx) rather than erroring, so the correctness bar holds.
+
+Requires `bash`, `curl`, `jq` (for `burst.sh`). Sample `burst.sh` output:
 
 ```
 >>> Hot-seat storm: 500 users all target seat S1 at once
