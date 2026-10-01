@@ -2,7 +2,7 @@ spring:
   application:
     name: seat-reservation
   datasource:
-    # DATABASE_URL is a standard provided by Render/Railway/Fly.
+    # DATABASE_URL is a standard provided by Render.
     # Falls back to local docker-compose postgres for dev.
     url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/seats}
     username: ${DATABASE_USERNAME:seats}
@@ -69,6 +69,10 @@ management:
   metrics:
     tags:
       application: seat-reservation
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
 logging:
   level:
