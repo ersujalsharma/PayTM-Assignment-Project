@@ -1,0 +1,24 @@
+# Build output
+target/
+build/
+out/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.classpath
+*.project
+*.settings/
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# Local env files (never commit secrets)
+.env
+.env.local
+
+# Maven wrapper jar is committed on purpose; nothing to ignore there.
