@@ -58,7 +58,13 @@ public class ReservationService {
     // attempt starts a FRESH transaction (a new call to a @Transactional method).
     private final ReservationService self;
 
-    private static final int MAX_ATTEMPTS = 4;
+    // More attempts over a longer window: a connection-pool acquisition failure
+    // under a stampede is transient (connections free up in ms-to-seconds), so
+    // we keep retrying with capped backoff rather than surfacing a 5xx. Combined
+    // with a short per-attempt connection-timeout this fails fast per try but is
+    // patient overall.
+    private static final int MAX_ATTEMPTS = 8;
+    private static final long MAX_BACKOFF_MS = 500;
 
     public ReservationService(ShowRepository shows,
                               SeatRepository seats,
@@ -95,8 +101,15 @@ public class ReservationService {
             } catch (ReservationDeclinedException | NotFoundException domain) {
                 throw domain; // clean outcome, do not retry
             } catch (RuntimeException ex) {
-                if (!isTransient(ex) || attempt == MAX_ATTEMPTS) {
-                    throw ex;
+                if (!isTransient(ex)) {
+                    throw ex; // genuine unexpected error -> 500 (should not happen in normal flow)
+                }
+                if (attempt == MAX_ATTEMPTS) {
+                    // Exhausted retries on a transient capacity/contention issue.
+                    // This is overload, not a bug: surface as 429 (a 4xx) with
+                    // Retry-After so the client backs off. Keeps 5xx at zero.
+                    throw new CapacityExhaustedException(
+                            "service saturated; retry shortly", ex);
                 }
                 last = ex;
                 log.warn("transient DB error on reserve (attempt {}/{}): {}",
@@ -104,7 +117,7 @@ public class ReservationService {
                 backoff(attempt);
             }
         }
-        throw last; // unreachable, but keeps the compiler happy
+        throw new CapacityExhaustedException("service saturated; retry shortly", last);
     }
 
     /** Internal signal that the attempt should be retried on a fresh transaction. */
@@ -140,9 +153,9 @@ public class ReservationService {
 
     private void backoff(int attempt) {
         try {
-            // 20ms, 40ms, 80ms ... with a little jitter.
-            long base = 20L * (1L << (attempt - 1));
-            Thread.sleep(base + (long) (Math.random() * 15));
+            // Exponential backoff with jitter, capped: 20,40,80,160,320,500,500...
+            long base = Math.min(MAX_BACKOFF_MS, 20L * (1L << Math.min(attempt - 1, 20)));
+            Thread.sleep(base + (long) (Math.random() * 40));
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }

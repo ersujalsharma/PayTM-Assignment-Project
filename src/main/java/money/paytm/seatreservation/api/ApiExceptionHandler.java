@@ -54,6 +54,17 @@ public class ApiExceptionHandler {
                 .body(body("forbidden", null, ex.getMessage()));
     }
 
+    @ExceptionHandler(money.paytm.seatreservation.service.CapacityExhaustedException.class)
+    public ResponseEntity<Map<String, Object>> saturated(
+            money.paytm.seatreservation.service.CapacityExhaustedException ex) {
+        // Overload / transient saturation -> 429 (a 4xx), NOT a 5xx. Tell the
+        // client to back off and retry; the request was not processed, so no
+        // seat was taken.
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header("Retry-After", "1")
+                .body(body("busy", "capacity_exhausted", ex.getMessage()));
+    }
+
     @ExceptionHandler({MethodArgumentNotValidException.class, IllegalArgumentException.class})
     public ResponseEntity<Map<String, Object>> badRequest(Exception ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)

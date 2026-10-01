@@ -33,9 +33,14 @@ services:
         value: ""
       - key: HOLD_TTL_SECONDS
         value: "120"
-      # Keep the pool well under Postgres' connection cap on the free tier.
+      # Free Postgres allows ~97 connections; use a healthy slice so a single
+      # free-tier instance can actually serve concurrent reservations instead of
+      # starving on 15 connections. Tomcat worker threads are capped near this
+      # (TOMCAT_MAX_THREADS) so we never admit far more work than the pool can do.
       - key: DB_POOL_SIZE
-        value: "15"
+        value: "40"
+      - key: TOMCAT_MAX_THREADS
+        value: "48"
 
 databases:
   - name: seat-reservation-db

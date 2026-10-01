@@ -11,10 +11,13 @@ spring:
       # Pool sized for burst traffic. Keep it bounded so we never exhaust PG.
       maximum-pool-size: ${DB_POOL_SIZE:30}
       minimum-idle: ${DB_POOL_MIN_IDLE:5}
-      # Wait a little longer for a connection under a stampede before failing;
-      # a failure here is retried by the service, but giving the pool room
-      # avoids unnecessary retries.
-      connection-timeout: ${DB_CONN_TIMEOUT_MS:15000}
+      # Fail FAST when the pool is saturated instead of blocking a thread for
+      # many seconds. Under overload (more concurrent requests than connections)
+      # a request bounces quickly; the service's bounded retry with backoff then
+      # smooths it. A long timeout here is what caused request pile-ups
+      # (waiting=57) and eventual 5xx on the tiny free-tier instance.
+      connection-timeout: ${DB_CONN_TIMEOUT_MS:3000}
+      validation-timeout: 2000
       pool-name: seats-pool
       # Server-side guards: cap how long any single statement or lock-wait can
       # block. A seat row contended by many txns will hit lock_timeout (SQLSTATE
@@ -41,7 +44,15 @@ server:
   shutdown: graceful
   tomcat:
     threads:
-      max: ${TOMCAT_MAX_THREADS:200}
+      # Keep the worker-thread count near the DB pool size. Admitting far more
+      # requests than there are DB connections just creates a thundering herd
+      # that all block on the pool. Matching them means excess load waits in the
+      # accept queue briefly (or is shed) rather than piling onto 15 connections.
+      max: ${TOMCAT_MAX_THREADS:40}
+    # Bound the accept backlog so sustained overload sheds fast instead of
+    # queueing unboundedly.
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:1000}
 
 # Application-specific knobs
 app:
