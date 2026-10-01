@@ -1,0 +1,76 @@
+spring:
+  application:
+    name: seat-reservation
+  datasource:
+    # DATABASE_URL is a standard provided by Render/Railway/Fly.
+    # Falls back to local docker-compose postgres for dev.
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/seats}
+    username: ${DATABASE_USERNAME:seats}
+    password: ${DATABASE_PASSWORD:seats}
+    hikari:
+      # Pool sized for burst traffic. Keep it bounded so we never exhaust PG.
+      maximum-pool-size: ${DB_POOL_SIZE:30}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 10000
+      pool-name: seats-pool
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+server:
+  port: ${PORT:8080}
+  # Graceful shutdown so in-flight reservations complete on redeploy.
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+
+# Application-specific knobs
+app:
+  reservation:
+    # Default per-user seat limit for a show (overridable per show at creation).
+    default-per-user-limit: 4
+    # Hold TTL. A reservation left in HELD state longer than this auto-expires.
+    hold-ttl-seconds: ${HOLD_TTL_SECONDS:120}
+    # How often the sweeper looks for expired holds.
+    sweep-interval-ms: ${SWEEP_INTERVAL_MS:5000}
+  auth:
+    # Static demo tokens -> user ids. In prod this would be a JWT/introspection.
+    # Format: token1:user1,token2:user2  (if empty, any "Bearer <x>" maps user to <x>)
+    tokens: ${AUTH_TOKENS:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+      base-path: /actuator
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: seat-reservation
+
+logging:
+  level:
+    root: INFO
+    money.paytm: INFO
