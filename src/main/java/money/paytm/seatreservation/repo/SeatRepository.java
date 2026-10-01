@@ -77,4 +77,15 @@ public interface SeatRepository extends JpaRepository<Seat, UUID> {
     long countByShowIdAndStatus(UUID showId, SeatStatus status);
 
     long countByStatus(SeatStatus status);
+
+    /**
+     * Transaction-scoped advisory lock keyed on (showId, userId). All of a
+     * single user's concurrent reserve attempts for the same show serialize on
+     * this lock, so the per-user-limit count below always sees committed state.
+     * Released automatically at transaction end. Different users/shows hash to
+     * different keys and proceed in parallel, so this does not serialize the
+     * whole system - only a single user's own concurrent requests.
+     */
+    @Query(value = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))", nativeQuery = true)
+    void acquireUserShowLock(@Param("key") String key);
 }

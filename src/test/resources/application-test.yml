@@ -1,0 +1,19 @@
+spring:
+  datasource:
+    # Overridden at runtime by the embedded-postgres bootstrap in the test base.
+    url: ${EMBEDDED_PG_URL}
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
+app:
+  reservation:
+    default-per-user-limit: 4
+    hold-ttl-seconds: 120
+    sweep-interval-ms: 1000000   # effectively disable the sweeper during tests
+  auth:
+    tokens: ""   # passthrough: bearer token value == user id

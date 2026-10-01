@@ -76,6 +76,14 @@ public class ReservationService {
 
         String requestHash = RequestHasher.hash(showId, labels);
 
+        // ---- Serialize this user's concurrent reserves for this show. ----
+        // A transaction-scoped advisory lock on (show, user) means the per-user
+        // limit count and the idempotency check below both observe committed
+        // state, closing the read-then-write window that a plain COUNT has under
+        // READ COMMITTED. Scoped per user+show, so it does not throttle the
+        // system - only one user's own parallel attempts line up behind it.
+        seats.acquireUserShowLock(showId + ":" + userId);
+
         // ---- Idempotency fast-path: has this (user, show, key) been seen? ----
         Optional<Reservation> existing = reservations
                 .findByUserIdAndShowIdAndIdempotencyKey(userId, showId, idempotencyKey);
