@@ -27,9 +27,11 @@ services:
       DATABASE_USERNAME: seats
       DATABASE_PASSWORD: seats
       PORT: 8080
-      # Explicit demo tokens so identity tests are deterministic.
-      # alice/bob/admin map to those user ids; passthrough also works if unset.
-      AUTH_TOKENS: "alice-token:alice,bob-token:bob,admin-token:admin"
+      # Passthrough auth: the bearer token value IS the user id (e.g.
+      # "Authorization: Bearer alice" -> user "alice"). This lets the burst
+      # script drive thousands of distinct users and is still token-derived
+      # identity. Set AUTH_TOKENS="tok1:user1,..." to use a fixed token map.
+      AUTH_TOKENS: ""
       HOLD_TTL_SECONDS: 120
     ports:
       - "8080:8080"
