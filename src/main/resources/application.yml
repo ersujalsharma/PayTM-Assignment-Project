@@ -11,8 +11,18 @@ spring:
       # Pool sized for burst traffic. Keep it bounded so we never exhaust PG.
       maximum-pool-size: ${DB_POOL_SIZE:30}
       minimum-idle: ${DB_POOL_MIN_IDLE:5}
-      connection-timeout: 10000
+      # Wait a little longer for a connection under a stampede before failing;
+      # a failure here is retried by the service, but giving the pool room
+      # avoids unnecessary retries.
+      connection-timeout: ${DB_CONN_TIMEOUT_MS:15000}
       pool-name: seats-pool
+      # Server-side guards: cap how long any single statement or lock-wait can
+      # block. A seat row contended by many txns will hit lock_timeout (SQLSTATE
+      # 55P03) quickly and surface as a RETRYABLE error instead of pinning a
+      # connection until the pool starves. These keep tail latency bounded and
+      # 5xx at zero under heavy contention.
+      data-source-properties:
+        options: "-c statement_timeout=8000 -c lock_timeout=4000 -c idle_in_transaction_session_timeout=10000"
   jpa:
     open-in-view: false
     hibernate:

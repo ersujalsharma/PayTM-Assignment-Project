@@ -94,9 +94,17 @@ echo "   S1 winners (201): $HOT_201   losers (409): $HOT_409   5xx: $HOT_5XX"
 
 # Reserve a few seat labels exclusively for the idempotency / limit sub-tests
 # so the random stampede below cannot contend for them and muddy those checks.
-# Stampede draws from seats [RESERVED_FROM .. TOTAL_SEATS]; S2 and S50..S59 are
-# kept clear.
-RESERVED_FROM=70
+# The idempotency test uses S2/S3 and the per-user-limit test uses S50..S59, so
+# the stampede draws from a range that starts above those. RESERVED_FROM adapts
+# to small shows so the stampede range is never empty.
+# Keep S1..S20 clear for the sub-tests (idempotency uses S2/S3; the per-user
+# limit test uses S10..S19). The stampede draws from S21 upward. For tiny shows
+# we shrink the reserved block so the stampede range is never empty.
+if (( TOTAL_SEATS > 25 )); then
+  RESERVED_FROM=21
+else
+  RESERVED_FROM=$(( TOTAL_SEATS / 2 + 1 ))
+fi
 
 # ---- 3. GENERAL STAMPEDE: random seats (in the stampede range) ----------
 echo
@@ -131,7 +139,7 @@ echo "   same-key-different-body -> HTTP $(echo "$CONFLICT" | tail -n1), code=$(
 echo
 echo ">>> Per-user limit: 'limituser' fires 10 parallel reserves (limit=4)"
 LIMIT_OUT="$TMP/limit.txt"; : > "$LIMIT_OUT"
-for s in $(seq 50 59); do
+for s in $(seq 10 19); do
   fire_reserve "limituser" "[\"S$s\"]" "limit-$s" "$LIMIT_OUT" &
 done
 wait

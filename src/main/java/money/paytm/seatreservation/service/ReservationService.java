@@ -6,8 +6,14 @@ import money.paytm.seatreservation.observability.ReservationMetrics;
 import money.paytm.seatreservation.repo.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.dao.TransientDataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.TransactionException;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.OffsetDateTime;
@@ -48,23 +54,103 @@ public class ReservationService {
     private final ReservationMetrics metrics;
     private final long holdTtlSeconds;
 
+    // Self-reference so retry calls go through the transactional proxy and each
+    // attempt starts a FRESH transaction (a new call to a @Transactional method).
+    private final ReservationService self;
+
+    private static final int MAX_ATTEMPTS = 4;
+
     public ReservationService(ShowRepository shows,
                               SeatRepository seats,
                               ReservationRepository reservations,
                               ReservationSeatRepository reservationSeats,
                               ReservationMetrics metrics,
-                              money.paytm.seatreservation.config.AppProperties props) {
+                              money.paytm.seatreservation.config.AppProperties props,
+                              @Lazy ReservationService self) {
         this.shows = shows;
         this.seats = seats;
         this.reservations = reservations;
         this.reservationSeats = reservationSeats;
         this.metrics = metrics;
         this.holdTtlSeconds = props.getReservation().getHoldTtlSeconds();
+        this.self = self;
+    }
+
+    /**
+     * Public entry point. Retries on TRANSIENT database failures (serialization
+     * conflicts, deadlock-detected, lock timeouts, momentary connection blips)
+     * with a short backoff. These are infrastructure hiccups under heavy load,
+     * not domain outcomes - so they must become a retry (and ultimately a
+     * success or a clean 4xx), never a 5xx.
+     *
+     * Domain declines (ReservationDeclinedException) and NotFoundException are
+     * deterministic outcomes and are rethrown immediately without retry.
+     */
+    public ReservationResponse reserve(UUID showId, String userId,
+                                       List<String> requestedSeats, String idempotencyKey) {
+        RuntimeException last = null;
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                return self.reserveOnce(showId, userId, requestedSeats, idempotencyKey);
+            } catch (ReservationDeclinedException | NotFoundException domain) {
+                throw domain; // clean outcome, do not retry
+            } catch (RuntimeException ex) {
+                if (!isTransient(ex) || attempt == MAX_ATTEMPTS) {
+                    throw ex;
+                }
+                last = ex;
+                log.warn("transient DB error on reserve (attempt {}/{}): {}",
+                        attempt, MAX_ATTEMPTS, ex.getClass().getSimpleName());
+                backoff(attempt);
+            }
+        }
+        throw last; // unreachable, but keeps the compiler happy
+    }
+
+    /** Internal signal that the attempt should be retried on a fresh transaction. */
+    private static class RetryableConflict extends RuntimeException {
+        RetryableConflict(String msg, Throwable cause) {
+            super(msg, cause);
+        }
+    }
+
+    /** Transient = retryable: serialization/deadlock/lock-timeout/connection. */
+    private boolean isTransient(Throwable ex) {
+        for (Throwable t = ex; t != null; t = t.getCause()) {
+            if (t instanceof RetryableConflict
+                    || t instanceof TransientDataAccessException
+                    || t instanceof CannotAcquireLockException
+                    || t instanceof PessimisticLockingFailureException
+                    || t instanceof QueryTimeoutException
+                    || t instanceof TransactionException) {
+                return true;
+            }
+            // Postgres SQLState classes: 40001 serialization_failure,
+            // 40P01 deadlock_detected, 55P03 lock_not_available, 08* connection.
+            if (t instanceof java.sql.SQLException sql) {
+                String s = sql.getSQLState();
+                if (s != null && (s.equals("40001") || s.equals("40P01")
+                        || s.equals("55P03") || s.startsWith("08"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void backoff(int attempt) {
+        try {
+            // 20ms, 40ms, 80ms ... with a little jitter.
+            long base = 20L * (1L << (attempt - 1));
+            Thread.sleep(base + (long) (Math.random() * 15));
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Transactional
-    public ReservationResponse reserve(UUID showId, String userId,
-                                       List<String> requestedSeats, String idempotencyKey) {
+    public ReservationResponse reserveOnce(UUID showId, String userId,
+                                           List<String> requestedSeats, String idempotencyKey) {
         Show show = shows.findById(showId)
                 .orElseThrow(() -> new NotFoundException("show not found: " + showId));
 
@@ -121,11 +207,12 @@ public class ReservationService {
             reservations.saveAndFlush(reservation);
         } catch (DataIntegrityViolationException e) {
             // Lost an idempotency-key race: another concurrent request with the
-            // same (user, show, key) inserted first. Resolve as a replay.
-            Reservation winner = reservations
-                    .findByUserIdAndShowIdAndIdempotencyKey(userId, showId, idempotencyKey)
-                    .orElseThrow(() -> e);
-            return handleExistingKey(winner, requestHash);
+            // same (user, show, key) inserted first. This transaction is now
+            // aborted (Postgres), so we cannot re-read here. Signal a retry; the
+            // next attempt runs a fresh transaction whose idempotency fast-path
+            // read finds the committed winner and replays it. (The advisory lock
+            // above makes this race rare, but we handle it correctly regardless.)
+            throw new RetryableConflict("idempotency key insert raced; retry to replay", e);
         }
 
         // ---- The atomic claim: AVAILABLE -> CONFIRMED for exactly our seats. ----
