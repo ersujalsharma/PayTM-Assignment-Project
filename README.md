@@ -5,6 +5,14 @@ load**: it never sells the same seat twice, never lets a user exceed their booki
 limit, and never double-charges a retried request — even when thousands of buyers
 storm the same show at on-sale time.
 
+**Live URL:** https://seat-reservation-yrkf.onrender.com
+(health: [`/actuator/health/readiness`](https://seat-reservation-yrkf.onrender.com/actuator/health/readiness) ·
+metrics: [`/actuator/prometheus`](https://seat-reservation-yrkf.onrender.com/actuator/prometheus))
+
+> Hosted on Render's free tier, so the first request after idle may take ~30s to
+> wake (cold start); it then comes up healthy. Run the burst with:
+> `./burst.sh https://seat-reservation-yrkf.onrender.com`
+
 - **Stack:** Java 21, Spring Boot 3.3, PostgreSQL (single database), Flyway, Micrometer/Prometheus.
 - **Money:** integer paise everywhere, never floats.
 - **Correctness mechanism:** a single atomic `UPDATE ... WHERE status='AVAILABLE'`
