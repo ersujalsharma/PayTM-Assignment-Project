@@ -29,7 +29,12 @@ COPY --from=build /app/target/seat-reservation-*.jar app.jar
 
 EXPOSE 8080
 
-# Container-aware heap sizing; respects memory limits set by the platform.
-ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+UseG1GC"
+# Container-aware JVM tuning for a small (e.g. 512MB free-tier) instance.
+# - MaxRAMPercentage 60: leave headroom for thread stacks + off-heap/metaspace so
+#   we don't OOM-kill under a burst.
+# - SerialGC: lowest CPU/memory overhead on a sub-1-vCPU box (G1's background
+#   threads just add contention when you only have a fraction of a core).
+# - ActiveProcessorCount hint keeps thread pools sane on fractional CPUs.
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=60.0 -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError -XX:ActiveProcessorCount=1"
 
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

@@ -56,6 +56,13 @@ server:
 
 # Application-specific knobs
 app:
+  # Admission control: cap concurrently-processed write requests so a stampede
+  # can't drive CPU/connections to saturation. Excess waits up to max-wait-ms
+  # for a slot, else gets a fast 429 + Retry-After (clean shed, never a 5xx).
+  # Set max-concurrent at or just below the DB pool size.
+  admission:
+    max-concurrent: ${ADMISSION_MAX_CONCURRENT:40}
+    max-wait-ms: ${ADMISSION_MAX_WAIT_MS:800}
   reservation:
     # Default per-user seat limit for a show (overridable per show at creation).
     default-per-user-limit: 4

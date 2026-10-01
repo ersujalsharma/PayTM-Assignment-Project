@@ -1,0 +1,23 @@
+# Overlay that constrains the app container to roughly Render's free tier
+# (~0.1 vCPU, 512MB) and applies the production admission-control / pool / JVM
+# settings. Use this to reproduce free-tier behaviour locally:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.freetier.yml up --build
+#
+# The point: prove the service STAYS ALIVE and correct (zero 5xx, exact
+# reconciliation) under a 20k burst on tiny hardware - shedding excess load as
+# 429 rather than crashing.
+services:
+  app:
+    environment:
+      DB_POOL_SIZE: "40"
+      TOMCAT_MAX_THREADS: "48"
+      ADMISSION_MAX_CONCURRENT: "35"
+      ADMISSION_MAX_WAIT_MS: "800"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"      # a bit above Render free (0.1) so the local test is
+                           # not absurdly slow, but still a hard CPU ceiling that
+                           # forces admission control to engage
+          memory: 512M

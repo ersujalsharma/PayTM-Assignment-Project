@@ -41,6 +41,14 @@ services:
         value: "40"
       - key: TOMCAT_MAX_THREADS
         value: "48"
+      # Admission control: process at most this many write requests at once; the
+      # rest are briefly queued then shed with 429. Keep at/under DB_POOL_SIZE so
+      # a stampede can't saturate CPU or exhaust the pool. This is what keeps the
+      # instance ALIVE and correct under a 20k burst instead of crashing.
+      - key: ADMISSION_MAX_CONCURRENT
+        value: "35"
+      - key: ADMISSION_MAX_WAIT_MS
+        value: "800"
 
 databases:
   - name: seat-reservation-db
