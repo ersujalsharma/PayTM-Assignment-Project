@@ -1,6 +1,5 @@
 package money.paytm.seatreservation.api;
 
-import jakarta.servlet.http.HttpServletResponse;
 import money.paytm.seatreservation.service.ForbiddenException;
 import money.paytm.seatreservation.service.NotFoundException;
 import money.paytm.seatreservation.service.ReservationDeclinedException;
