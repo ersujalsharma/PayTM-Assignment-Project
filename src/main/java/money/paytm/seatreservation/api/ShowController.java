@@ -13,6 +13,26 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
+/**
+ * HTTP API for shows and reservations.
+ *
+ * <p>Endpoints:
+ * <ul>
+ *   <li>{@code POST /shows} - create a show with its seats (admin).</li>
+ *   <li>{@code GET  /shows/{id}} - per-seat status and reconciliation counts.</li>
+ *   <li>{@code POST /shows/{id}/reserve} - reserve seat(s) for the authenticated
+ *       user, idempotently.</li>
+ *   <li>{@code POST /reservations/{id}/cancel} - owner-only cancel.</li>
+ * </ul>
+ *
+ * <p><b>Identity is always derived from the auth token</b> (via {@code AuthFilter}
+ * -&gt; {@link CurrentUser}), never from the request body. A client therefore
+ * cannot act "as" another user by putting a user id in the payload, and can only
+ * cancel its own reservations.
+ *
+ * <p>Error mapping lives in {@code ApiExceptionHandler}: domain declines are 409,
+ * overload is 429, and only genuinely unexpected failures are 5xx.
+ */
 @RestController
 public class ShowController {
 

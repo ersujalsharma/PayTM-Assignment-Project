@@ -21,26 +21,41 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Core reservation logic. Correctness guarantees (all enforced inside ONE
- * database transaction):
+ * Core reservation logic. This is the heart of the "correct under load" design.
  *
- *  1. No double-sell: seats are claimed with a single conditional UPDATE
- *     (SeatRepository.claimSeats) guarded on status='AVAILABLE'. If the number
- *     of rows updated != number requested, some seat was taken -> roll back,
- *     decline 409. Backed by a partial unique index so a double active owner is
- *     physically impossible.
+ * <p><b>Correctness guarantees</b> (all enforced inside ONE database transaction,
+ * see {@link #reserveOnce}):
+ * <ol>
+ *   <li><b>No double-sell:</b> seats are claimed with a single conditional UPDATE
+ *       ({@code SeatRepository.claimSeats}) guarded on {@code status='AVAILABLE'}.
+ *       If rows-updated != seats-requested, some seat was already taken, so we
+ *       roll back and decline with 409. A partial unique index on the seat's
+ *       active owner makes a double active owner physically impossible even if
+ *       application logic had a bug.</li>
+ *   <li><b>Multi-seat is ALL-OR-NOTHING:</b> all requested seats are locked
+ *       {@code FOR UPDATE} in sorted (seat_label) order first. A single global
+ *       lock order across all callers makes deadlock impossible. The one guarded
+ *       UPDATE then claims every seat or the transaction aborts (claiming none).</li>
+ *   <li><b>Per-user limit:</b> enforced inside the transaction, serialized by a
+ *       per-(show,user) advisory lock so concurrent reserves by the same user
+ *       cannot each read a stale "under the limit" count.</li>
+ *   <li><b>Idempotency:</b> the reservation row carries UNIQUE(user, show, key).
+ *       The unique constraint - not an application read - is the exactly-once
+ *       mechanism. Same key + same body replays the original; same key +
+ *       different body is a 409 conflict.</li>
+ * </ol>
  *
- *  2. Multi-seat is ALL-OR-NOTHING. We lock all requested seats FOR UPDATE in
- *     sorted (seat_label) order first; deterministic ordering prevents deadlock.
- *     Then the single guarded UPDATE either claims every seat or we abort.
- *
- *  3. Per-user limit: counted inside the transaction after acquiring locks, so
- *     concurrent reserves for the same user serialize on their existing rows.
- *
- *  4. Idempotency: the reservation row carries a UNIQUE(user, show, key). We try
- *     to insert; a duplicate key means a prior attempt exists -> we replay it
- *     (same body) or reject (different body, 409). The unique constraint, not an
- *     application read, is the exactly-once mechanism.
+ * <p><b>Resilience layering</b> around that transactional core:
+ * <ul>
+ *   <li>{@link #reserve} wraps {@link #reserveOnce} with a bounded retry on
+ *       <i>transient</i> database errors (serialization/deadlock/lock-timeout/
+ *       connection), so momentary contention becomes a retry, never a 5xx.</li>
+ *   <li>If retries are exhausted under genuine saturation it throws
+ *       {@link CapacityExhaustedException} (-&gt; 429), keeping server errors at
+ *       zero even when overloaded.</li>
+ *   <li>Upstream, {@code AdmissionControlFilter} bounds how many reservations run
+ *       concurrently so the instance never saturates in the first place.</li>
+ * </ul>
  */
 @Service
 public class ReservationService {
