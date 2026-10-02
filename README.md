@@ -1,5 +1,8 @@
 # Seat Reservation at Scale
 
+[![CI](https://github.com/ersujalsharma/PayTM-Assignment-Project/actions/workflows/ci.yml/badge.svg)](https://github.com/ersujalsharma/PayTM-Assignment-Project/actions/workflows/ci.yml)
+[![Docker build & smoke test](https://github.com/ersujalsharma/PayTM-Assignment-Project/actions/workflows/docker.yml/badge.svg)](https://github.com/ersujalsharma/PayTM-Assignment-Project/actions/workflows/docker.yml)
+
 A JSON HTTP service that sells assigned seats for a show and stays **correct under
 load**: it never sells the same seat twice, never lets a user exceed their booking
 limit, and never double-charges a retried request — even when thousands of buyers
