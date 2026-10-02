@@ -69,6 +69,15 @@ make burst BASE_URL=<BASE_URL>
 #            ^ base url                           ^seats ^hot-seat users ^stampede users
 ```
 
+### Postman collection
+
+A ready-to-run collection with assertions lives in [`postman/`](./postman): import
+`seat-reservation.postman_collection.json` plus the **Live** or **Local** environment,
+then run it top-to-bottom (requests chain automatically). It verifies create/reserve,
+token-derived identity (403 without a token), idempotent replay, same-key-different-body
+409, seat-taken 409, multi-seat all-or-nothing, owner-only cancel + re-book, per-user
+limit, reconciliation, and the metrics endpoint. See [`postman/README.md`](./postman/README.md).
+
 ### High-volume (20k) load test
 
 The bash burst can't generate 20k concurrency (one `curl` per request). For the

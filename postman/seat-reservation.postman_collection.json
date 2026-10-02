@@ -1,0 +1,336 @@
+{
+  "info": {
+    "name": "Seat Reservation at Scale",
+    "_postman_id": "6b1d3f2a-7c4e-4a1b-9f3d-seatreservation01",
+    "description": "End-to-end API tests for the seat reservation service.\n\nRun the whole collection top-to-bottom (Collection Runner) — requests chain via collection variables (show_id, reservation_id) that are captured automatically. Each request has test assertions.\n\nAuth is token-derived: in the service's default passthrough mode the bearer token value IS the user id, so `Authorization: Bearer alice` acts as user `alice`. Switch target host with the `baseUrl` variable (local vs live).\n\nCovers: create show, reserve, no-auth 403, seat-taken 409, idempotent replay, same-key-different-body 409 conflict, per-user limit, owner-only cancel + re-book, reconciliation invariant, health & metrics.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "https://seat-reservation-yrkf.onrender.com", "type": "string" },
+    { "key": "localUrl", "value": "http://localhost:8080", "type": "string" },
+    { "key": "aliceToken", "value": "alice", "type": "string" },
+    { "key": "bobToken", "value": "bob", "type": "string" },
+    { "key": "adminToken", "value": "admin", "type": "string" },
+    { "key": "show_id", "value": "", "type": "string" },
+    { "key": "reservation_id", "value": "", "type": "string" },
+    { "key": "idem_key", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "0. Health - liveness",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/actuator/health/liveness", "host": ["{{baseUrl}}"], "path": ["actuator", "health", "liveness"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('liveness is 200', () => pm.response.to.have.status(200));",
+          "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "0. Health - readiness (checks DB)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/actuator/health/readiness", "host": ["{{baseUrl}}"], "path": ["actuator", "health", "readiness"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('readiness is 200 (DB reachable)', () => pm.response.to.have.status(200));"
+        ] } }
+      ]
+    },
+    {
+      "name": "1. Create show (admin)",
+      "event": [
+        { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+          "// Unique idempotency key for this run.",
+          "pm.collectionVariables.set('idem_key', 'pm-' + Date.now());"
+        ] } },
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('201 created', () => pm.response.to.have.status(201));",
+          "const b = pm.response.json();",
+          "pm.collectionVariables.set('show_id', b.id);",
+          "pm.test('has id', () => pm.expect(b.id).to.be.a('string'));",
+          "pm.test('total_seats = 5', () => pm.expect(b.total_seats).to.eql(5));",
+          "pm.test('per_user_limit defaulted to 4', () => pm.expect(b.per_user_limit).to.eql(4));",
+          "pm.test('all seats available', () => pm.expect(b.counts.available).to.eql(5));"
+        ] } }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{adminToken}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"name\": \"postman-show\",\n  \"seats\": [\"A1\", \"A2\", \"A3\", \"A4\", \"A5\"],\n  \"price_paise\": 25000\n}" },
+        "url": { "raw": "{{baseUrl}}/shows", "host": ["{{baseUrl}}"], "path": ["shows"] }
+      }
+    },
+    {
+      "name": "2. Get show state (reconciliation)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('200', () => pm.response.to.have.status(200));",
+          "const c = pm.response.json().counts;",
+          "pm.test('reconciliation: available+held+confirmed == total', () =>",
+          "  pm.expect(c.available + c.held + c.confirmed).to.eql(c.total_seats));"
+        ] } }
+      ]
+    },
+    {
+      "name": "3. Reserve A1 WITHOUT token -> 403",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Content-Type", "value": "application/json" } ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\"],\n  \"idempotency_key\": \"no-auth\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('403 - identity is token-derived, no token = forbidden', () => pm.response.to.have.status(403));"
+        ] } }
+      ]
+    },
+    {
+      "name": "4. Alice reserves A1 -> 201",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{aliceToken}}" },
+          { "key": "Idempotency-Key", "value": "{{idem_key}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\"],\n  \"idempotency_key\": \"{{idem_key}}\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('201 confirmed', () => pm.response.to.have.status(201));",
+          "const b = pm.response.json();",
+          "pm.collectionVariables.set('reservation_id', b.reservation_id);",
+          "pm.test('user_id is token-derived = alice', () => pm.expect(b.user_id).to.eql('alice'));",
+          "pm.test('seats = [A1]', () => pm.expect(b.seats).to.eql(['A1']));",
+          "pm.test('amount_paise = 25000', () => pm.expect(b.amount_paise).to.eql(25000));",
+          "pm.test('status confirmed', () => pm.expect(b.status).to.eql('confirmed'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "5. Alice retries SAME key + body -> same reservation (idempotent)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{aliceToken}}" },
+          { "key": "Idempotency-Key", "value": "{{idem_key}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\"],\n  \"idempotency_key\": \"{{idem_key}}\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('201 (replay, not a new reservation)', () => pm.response.to.have.status(201));",
+          "pm.test('same reservation_id returned', () =>",
+          "  pm.expect(pm.response.json().reservation_id).to.eql(pm.collectionVariables.get('reservation_id')));"
+        ] } }
+      ]
+    },
+    {
+      "name": "6. Alice SAME key, DIFFERENT body -> 409 conflict",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{aliceToken}}" },
+          { "key": "Idempotency-Key", "value": "{{idem_key}}" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A2\"],\n  \"idempotency_key\": \"{{idem_key}}\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('409 conflict', () => pm.response.to.have.status(409));",
+          "pm.test('code = idempotency_conflict', () => pm.expect(pm.response.json().code).to.eql('idempotency_conflict'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "7. Bob tries A1 (already taken) -> 409 seat_taken",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{bobToken}}" },
+          { "key": "Idempotency-Key", "value": "bob-a1" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\"],\n  \"idempotency_key\": \"bob-a1\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('409 (no double-sell), not 5xx', () => pm.response.to.have.status(409));",
+          "pm.test('code = seat_taken', () => pm.expect(pm.response.json().code).to.eql('seat_taken'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "8. Multi-seat all-or-nothing: Bob [A1,A2] -> 409 (A1 taken)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{bobToken}}" },
+          { "key": "Idempotency-Key", "value": "bob-a1a2" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\", \"A2\"],\n  \"idempotency_key\": \"bob-a1a2\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('409 all-or-nothing', () => pm.response.to.have.status(409));",
+          "pm.test('code = seat_taken', () => pm.expect(pm.response.json().code).to.eql('seat_taken'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "9. Verify A2 still free after failed multi-seat",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "const seats = pm.response.json().seats;",
+          "const a2 = seats.find(s => s.seat === 'A2');",
+          "pm.test('A2 is still available (all-or-nothing held)', () => pm.expect(a2.status).to.eql('available'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "10. Owner-only cancel: Bob cannot cancel Alice's -> 403",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Authorization", "value": "Bearer {{bobToken}}" } ],
+        "url": { "raw": "{{baseUrl}}/reservations/{{reservation_id}}/cancel", "host": ["{{baseUrl}}"], "path": ["reservations", "{{reservation_id}}", "cancel"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('403 - only the owner may cancel', () => pm.response.to.have.status(403));"
+        ] } }
+      ]
+    },
+    {
+      "name": "11. Alice cancels her own reservation -> 204",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Authorization", "value": "Bearer {{aliceToken}}" } ],
+        "url": { "raw": "{{baseUrl}}/reservations/{{reservation_id}}/cancel", "host": ["{{baseUrl}}"], "path": ["reservations", "{{reservation_id}}", "cancel"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('204 no content', () => pm.response.to.have.status(204));"
+        ] } }
+      ]
+    },
+    {
+      "name": "12. A1 is re-bookable: Bob reserves A1 -> 201",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{bobToken}}" },
+          { "key": "Idempotency-Key", "value": "bob-a1-rebook" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A1\"],\n  \"idempotency_key\": \"bob-a1-rebook\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('201 - released seat is re-bookable', () => pm.response.to.have.status(201));",
+          "pm.test('now owned by bob', () => pm.expect(pm.response.json().user_id).to.eql('bob'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "13. Per-user limit: Bob reserves A2,A3,A4,A5 then A2 again (over 4)",
+      "description": "Bob already holds A1. Reserving A2..A5 brings him to 5 holds total; the 4th additional should be declined with per_user_limit. We reserve A2,A3,A4 (ok -> 4 total) then A5 (-> would be 5) expecting a per_user_limit decline.",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{bobToken}}" },
+          { "key": "Idempotency-Key", "value": "bob-a2a3a4" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A2\", \"A3\", \"A4\"],\n  \"idempotency_key\": \"bob-a2a3a4\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('201 - Bob now holds 4 (A1+A2+A3+A4)', () => pm.response.to.have.status(201));"
+        ] } }
+      ]
+    },
+    {
+      "name": "14. Per-user limit exceeded: Bob reserves A5 (5th) -> 409",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{bobToken}}" },
+          { "key": "Idempotency-Key", "value": "bob-a5" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"seats\": [\"A5\"],\n  \"idempotency_key\": \"bob-a5\"\n}" },
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}/reserve", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}", "reserve"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('409 - per-user limit (4) exceeded', () => pm.response.to.have.status(409));",
+          "pm.test('code = per_user_limit', () => pm.expect(pm.response.json().code).to.eql('per_user_limit'));"
+        ] } }
+      ]
+    },
+    {
+      "name": "15. Final reconciliation holds",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/shows/{{show_id}}", "host": ["{{baseUrl}}"], "path": ["shows", "{{show_id}}"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "const c = pm.response.json().counts;",
+          "pm.test('available+held+confirmed == total', () =>",
+          "  pm.expect(c.available + c.held + c.confirmed).to.eql(c.total_seats));",
+          "pm.test('bob holds 4 confirmed', () => pm.expect(c.confirmed).to.eql(4));"
+        ] } }
+      ]
+    },
+    {
+      "name": "16. Metrics - prometheus scrape",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/actuator/prometheus", "host": ["{{baseUrl}}"], "path": ["actuator", "prometheus"] }
+      },
+      "event": [
+        { "listen": "test", "script": { "type": "text/javascript", "exec": [
+          "pm.test('200', () => pm.response.to.have.status(200));",
+          "const t = pm.response.text();",
+          "pm.test('has reservations_confirmed_total', () => pm.expect(t).to.include('reservations_confirmed_total'));",
+          "pm.test('has reservations_declined_total', () => pm.expect(t).to.include('reservations_declined_total'));",
+          "pm.test('has seats_available gauge', () => pm.expect(t).to.include('seats_available'));"
+        ] } }
+      ]
+    }
+  ]
+}
