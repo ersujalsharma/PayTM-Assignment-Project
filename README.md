@@ -68,8 +68,11 @@ make burst BASE_URL=<BASE_URL>
 
 # examples
 ./burst.sh http://localhost:8080
-./burst.sh https://seat-reservation.onrender.com 200 500 400
-#            ^ base url                           ^seats ^hot-seat users ^stampede users
+./burst.sh https://seat-reservation-yrkf.onrender.com 200 500 400
+#            ^ base url                                ^seats ^hot-seat users ^stampede users
+
+# shortcut for the deployed instance
+make burst-live
 ```
 
 ### Postman collection
@@ -162,6 +165,20 @@ that now belongs to someone else. `204` on success, `403` if you are not the own
 Returns per-seat status (`available` / `held` / `confirmed`) and counts. The
 invariant `available + held + confirmed == total_seats` always holds.
 
+### Behaviour under overload
+Two layers keep the service correct and alive when load exceeds capacity, so a
+stampede on a small instance never produces a 5xx or a crash:
+
+- **Transient-error retry:** a reservation that hits a momentary DB conflict
+  (serialization / deadlock / lock-timeout / brief pool contention) is retried
+  with backoff inside the service — it becomes a success or a clean 4xx, never a 5xx.
+- **Admission control + load shedding:** a bounded number of reservations are
+  processed concurrently (tuned to the DB pool). Excess waits briefly, then gets
+  `429 Too Many Requests` + `Retry-After` (a 4xx — the request touched no state, so
+  the client simply retries). This is what prevents CPU/connection saturation from
+  taking the instance down. Shedding is observable via `admission_shed_total` /
+  `admission_admitted_total` / `admission_in_flight`.
+
 ---
 
 ## Health, metrics, logs
@@ -174,6 +191,7 @@ invariant `available + held + confirmed == total_seats` always holds.
   - `reservations_declined_total{reason="seat_taken|per_user_limit|idempotency_conflict|seat_not_found"}` (counter)
   - `reservations_idempotent_replay_total` (counter)
   - `seats_available` / `seats_held` / `seats_confirmed` (gauges)
+  - `admission_admitted_total` / `admission_shed_total` (counters), `admission_in_flight` (gauge)
 - **Logs:** structured JSON to stdout, every line carrying a `requestId`
   correlation id (also returned in the `X-Request-Id` response header). On Render
   these are visible in the service's **Logs** tab.
@@ -197,6 +215,19 @@ atomic SQL. Coverage includes:
 - **Multi-seat all-or-nothing** and **owner-only cancel + re-bookability**.
 - **Full-stack API smoke test** over HTTP (migration, token identity, 409-not-5xx,
   reconciliation, prometheus endpoint).
+
+## Continuous integration
+
+Two GitHub Actions workflows run on every push and PR to `main` (status badges at
+the top):
+
+- **CI** (`.github/workflows/ci.yml`) — JDK 21, `./mvnw verify`; runs the full test
+  suite (no DB service needed — tests use the bundled embedded Postgres) and uploads
+  the surefire reports.
+- **Docker build & smoke test** (`.github/workflows/docker.yml`) — builds the image
+  from a clean checkout, runs it against a Postgres service container, waits for
+  DB-checked readiness, then smoke-tests create → reserve → double-sell-409 →
+  reconciliation. This guards the "a clean checkout must build and run" requirement.
 
 ---
 
@@ -223,3 +254,9 @@ it is normalized to a JDBC URL at startup, so Railway/Fly/Heroku-style URLs work
 | `AUTH_TOKENS` | empty (passthrough) | `tok1:user1,tok2:user2` map; empty = token value is the user id |
 | `HOLD_TTL_SECONDS` | `120` | hold expiry window |
 | `DB_POOL_SIZE` | `30` | Hikari max pool size |
+| `TOMCAT_MAX_THREADS` | `40` | HTTP worker threads (kept near the pool size) |
+| `ADMISSION_MAX_CONCURRENT` | `40` | max reservations processed at once before shedding |
+| `ADMISSION_MAX_WAIT_MS` | `800` | how long a request waits for a slot before a 429 |
+
+> On the Render free tier (`render.yaml`) these are tuned for a small instance:
+> `DB_POOL_SIZE=40`, `TOMCAT_MAX_THREADS=48`, `ADMISSION_MAX_CONCURRENT=35`.

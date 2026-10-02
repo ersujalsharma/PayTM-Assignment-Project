@@ -147,7 +147,58 @@ in parallel; only one user's own parallel requests line up. The concurrency test
 (`perUserLimit_holdsUnderConcurrency`) fired 10 parallel reserves and failed before
 this fix (got 10), passes after (≤4).
 
-## 6. Observability — what I would get paged for at 2am
+## 6. Surviving the 20k stampede: capacity vs correctness
+
+A key distinction the design leans on: **correctness** and **capacity** are
+separate problems, and the assignment's "~20,000 concurrent" bar is really a
+correctness bar (no double-sell, zero 5xx, exact reconciliation) — not a demand
+that one tiny instance execute 20k requests simultaneously. A correct system under
+that load either *processes* the requests or *sheds* the excess cleanly; it must
+never corrupt state or crash.
+
+**What the atomic design gives us (correctness):** the guarded `UPDATE` + partial
+unique index + advisory lock hold regardless of volume, because the invariants live
+in Postgres, not in app memory. Measured on a well-resourced box: **20,000 requests
+at 600 in-flight → 0 server 5xx, ~5,000 req/s, p99 ~240ms, every hot seat sold
+exactly once, reconciliation exact.** On the Render free tier (~0.1 vCPU) the same
+run is correct but slow (~24 req/s) — throughput is a hardware dimension, not a
+correctness one.
+
+**What stops a stampede from crashing a small instance (capacity):** two layers
+sit around the transactional core.
+
+1. **Transient-error retry.** `reserve()` wraps the `@Transactional` core and
+   retries (bounded, with capped backoff) on *transient* database errors —
+   serialization failures (`40001`), deadlock (`40P01`), lock timeout (`55P03`),
+   connection blips (`08*`), and brief pool-acquisition timeouts. These are
+   infrastructure hiccups under load, so they become a retry → a success or a clean
+   4xx, never a 5xx. (Each retry runs a fresh transaction via a `@Lazy` self-proxy;
+   an idempotency-key insert race is also resolved this way — the next attempt reads
+   the committed winner and replays it.)
+
+2. **Admission control / load shedding.** `AdmissionControlFilter` caps how many
+   reservations are processed *concurrently* (a fair semaphore sized to the DB
+   pool). Excess requests wait briefly for a slot; if none frees up they get
+   `429 Too Many Requests` + `Retry-After` — a 4xx, and the request never touched
+   state, so the client just retries. This is the piece that directly prevents the
+   "CPU → 100% → process dies" failure: it converts *unbounded* work into *bounded*
+   work plus clean shedding.
+
+I verified this failure mode and fix explicitly. On a CPU-capped (0.5 vCPU) container
+under a 20k burst, the earlier design saturated and fell over; with admission control
+the container **stayed healthy**, returned **zero 5xx**, sold each hot seat exactly
+once, kept reconciliation exact, and shed a small fraction as 429s
+(`admission_shed_total`). The live free-tier instance also completed the full 20k
+burst correctly (just slowly).
+
+**Why fail-fast beats fail-slow here.** The original pool timeout was long (15s), so
+under overload hundreds of threads each blocked 15s, pinning connections and starving
+everything — the pile-up that crashed the box. The fix is a short pool-acquisition
+timeout (fail fast per attempt) combined with patient *retries* (fail slow overall)
+plus admission control (don't admit more than you can serve). Each attempt bounces
+quickly; the request as a whole is patient; the instance stays within budget.
+
+## 7. Observability — what I would get paged for at 2am
 
 - **`reservations_declined_total{reason="seat_taken"}` spiking toward 100%** of
   attempts → the show is effectively sold out, or a hot-seat storm; expected at
@@ -160,6 +211,9 @@ this fix (got 10), passes after (≤4).
 - **Reconciliation drift** — `seats_available + seats_held + seats_confirmed` not
   equal to the known total for a show → the most serious possible alert, it means
   the core invariant broke; this should never happen and would be page-now.
+- **`admission_shed_total` rising** → the instance is at capacity and shedding with
+  429s. Sustained shedding is the signal to scale up/out (not a correctness problem,
+  but a user-experience one).
 - **`reservations_idempotent_replay_total` climbing fast** → clients are retrying
   heavily, usually a sign of upstream timeouts or a client bug; worth looking at.
 
@@ -167,7 +221,7 @@ Every log line carries a `requestId` (propagated from `X-Request-Id` or generate
 so a single reservation can be traced across the burst. Logs are structured JSON on
 stdout, captured by the platform.
 
-## 7. AI usage (directed vs decided)
+## 8. AI usage (directed vs decided)
 
 Honest disclosure, as asked:
 
@@ -184,13 +238,16 @@ Honest disclosure, as asked:
 - **The verification was real and caught real bugs.** The per-user-limit race was
   found by a failing concurrency test (10/10 got through) and fixed with the
   advisory lock; the Prometheus endpoint was silently disabled and found via the
-  condition-evaluation report. I did not take green-on-first-try for granted — I ran
-  the burst against a live instance until every invariant held.
+  condition-evaluation report; the free-tier CPU-saturation crash was diagnosed from
+  the live logs (pool `waiting=57`, 15s timeouts) and fixed with fail-fast pool
+  timeouts + patient retries + admission control. I did not take green-on-first-try
+  for granted — I ran the burst and a 20k load generator against local and live
+  instances until every invariant held and the instance survived.
 
 I can extend this live: the depth (why each mechanism is race-free, where it would
 break, how to scale past one primary) is genuinely mine.
 
-## 8. What I would do next
+## 9. What I would do next
 
 - **Payments & true holds:** make reserve create a `HELD` reservation with a short
   TTL, confirm on payment success, let the sweeper reclaim abandoned holds — the
@@ -198,8 +255,12 @@ break, how to scale past one primary) is genuinely mine.
 - **Scale the data layer:** partition seats by show, add read replicas for
   `GET /shows/{id}`, and shard hot shows if a single primary saturates.
 - **Richer metrics:** per-show gauges (bounded cardinality), reserve latency
-  histograms, and a Grafana dashboard + alert rules matching §6.
+  histograms, and a Grafana dashboard + alert rules matching §7.
 - **Auth hardening:** replace the demo token map with real JWT verification /
   introspection; the identity seam (`TokenAuthenticator`) is already isolated.
-- **Rate limiting / queueing** at the edge to smooth on-sale spikes before they hit
-  the database.
+- **Scale for real throughput:** a bigger instance and/or horizontal scaling (safe —
+  invariants are in the DB) lifts the free-tier ~24 req/s toward the ~5,000 req/s
+  seen on real CPU. The admission limit and pool size scale with the instance.
+- **Edge rate-limiting / a virtual waiting room** to smooth on-sale spikes before
+  they reach the service, complementing the in-process admission control already in
+  place.
