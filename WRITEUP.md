@@ -1,5 +1,13 @@
 # Write-up — Seat Reservation at Scale
 
+**Live URL:** https://seat-reservation-yrkf.onrender.com
+· readiness: `/actuator/health/readiness`
+· metrics: `/actuator/prometheus`
+
+Run the on-sale stampede against it: `./burst.sh https://seat-reservation-yrkf.onrender.com`
+(see the README for the high-volume 20k generator). Free tier, so the first
+request after idle may cold-start for ~30s.
+
 ## 1. The atomic decision (why it is race-free)
 
 A seat is a single row in the `seats` table with a `status`

@@ -1,6 +1,9 @@
 BASE_URL ?= http://localhost:8080
 
-.PHONY: build test up down run burst logs
+# The deployed instance (Render free tier).
+LIVE_URL ?= https://seat-reservation-yrkf.onrender.com
+
+.PHONY: build test up down run burst burst-live logs
 
 build:
 	./mvnw -B -DskipTests clean package
@@ -24,3 +27,7 @@ run:
 # against BASE_URL. Override: make burst BASE_URL=https://your-app.onrender.com
 burst:
 	./burst.sh $(BASE_URL)
+
+# Same stampede, but against the deployed live URL.
+burst-live:
+	./burst.sh $(LIVE_URL)
